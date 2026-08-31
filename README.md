@@ -1,4 +1,4 @@
-# CarbonLedger (rebuilt)
+# CarbonLedger
 
 > Verified carbon credits. Permanent retirement. Full provenance.
 
