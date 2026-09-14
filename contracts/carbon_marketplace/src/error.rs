@@ -23,4 +23,6 @@ pub enum CarbonError {
     InvalidSerialRange = 15,
     NotOwner = 16,
     AlreadyListed = 17,
+    DuplicateListingId = 18,
+    BatchTooLarge = 19,
 }

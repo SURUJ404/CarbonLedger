@@ -5,12 +5,6 @@ pub use error::CarbonError;
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, IntoVal, Symbol, Vec};
 
-/// NOTE ON SCOPE: the original design included bulk_purchase() (buying from
-/// several projects in one transaction) and secondary trading on the Stellar
-/// DEX (SDEX). Both are dropped here to keep the contract small - this
-/// version only supports single-listing purchase. list_credits(),
-/// delist_credits(), purchase_credits() and the read helpers keep the same
-/// signatures and behaviour as the original for those flows.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Listing {
@@ -31,6 +25,7 @@ const FEE_BPS: i128 = 100; // 1% protocol fee, matches original spec
 const FEE_RECIPIENT: Symbol = Symbol::short("FEE_TO");
 const ADMIN: Symbol = Symbol::short("ADMIN");
 const SELLER_LISTINGS: Symbol = Symbol::short("SEL_LIST"); // per-seller listing id index
+const BATCH_SIZE_MAX: u32 = 50;
 
 #[contract]
 pub struct CarbonMarketplace;
@@ -187,6 +182,113 @@ impl CarbonMarketplace {
 
         env.events()
             .publish((Symbol::short("purchased"), listing_id), total_price);
+        Ok(())
+    }
+
+    /// Buyer purchases multiple listings in one atomic transaction. Each line
+    /// item must reference an active listing whose tonnes equal the requested
+    /// amount (partial fills are not yet supported by the credit contract).
+    /// The 1% protocol fee is applied per line item, matching purchase_credits().
+    /// The entire batch rolls back atomically if any single line item is invalid.
+    pub fn bulk_purchase(
+        env: Env,
+        buyer: Address,
+        purchases: Vec<(u64, u64)>,
+    ) -> Result<(), CarbonError> {
+        buyer.require_auth();
+
+        let num_items = purchases.len();
+        if num_items == 0 {
+            return Err(CarbonError::ZeroAmountNotAllowed);
+        }
+        if num_items > BATCH_SIZE_MAX {
+            return Err(CarbonError::BatchTooLarge);
+        }
+
+        // --- duplicate listing_id check ---
+        for i in 0..num_items {
+            let (id_i, _) = purchases.get(i).unwrap();
+            for j in (i + 1)..num_items {
+                let (id_j, _) = purchases.get(j).unwrap();
+                if id_i == id_j {
+                    return Err(CarbonError::DuplicateListingId);
+                }
+            }
+        }
+
+        // --- validate every listing before moving any funds/credits ---
+        for i in 0..num_items {
+            let (listing_id, amount) = purchases.get(i).unwrap();
+            let listing = Self::get_listing(env.clone(), listing_id)?;
+            if !listing.active {
+                return Err(CarbonError::ListingNotFound);
+            }
+            if amount == 0 || amount != listing.tonnes {
+                return Err(CarbonError::InsufficientCredits);
+            }
+        }
+
+        // --- execute all purchases ---
+        let usdc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&USDC_TOKEN)
+            .ok_or(CarbonError::PriceNotSet)?;
+        let fee_recipient: Address = env
+            .storage()
+            .instance()
+            .get(&FEE_RECIPIENT)
+            .ok_or(CarbonError::PriceNotSet)?;
+        let credit_addr: Address = env
+            .storage()
+            .instance()
+            .get(&CREDIT_CONTRACT)
+            .ok_or(CarbonError::PriceNotSet)?;
+        let usdc = token::Client::new(&env, &usdc_addr);
+
+        let mut total_tonnes: u64 = 0;
+        let mut total_usdc: i128 = 0;
+        let mut total_fees: i128 = 0;
+
+        for i in 0..num_items {
+            let (listing_id, amount) = purchases.get(i).unwrap();
+            let mut listing = Self::get_listing(env.clone(), listing_id)?;
+
+            let total_price = listing.price_per_tonne * (amount as i128);
+            let fee = (total_price * FEE_BPS) / 10_000;
+            let seller_proceeds = total_price - fee;
+
+            usdc.transfer(&buyer, &listing.seller, &seller_proceeds);
+            usdc.transfer(&buyer, &fee_recipient, &fee);
+
+            let mut args: Vec<soroban_sdk::Val> = Vec::new(&env);
+            args.push_back(listing.seller.clone().into_val(&env));
+            args.push_back(listing.batch_id.into_val(&env));
+            args.push_back(buyer.clone().into_val(&env));
+            env.invoke_contract::<()>(
+                &credit_addr,
+                &Symbol::new(&env, "transfer_credits"),
+                args,
+            );
+
+            listing.active = false;
+            env.storage()
+                .persistent()
+                .set(&(LISTING, listing_id), &listing);
+
+            env.events()
+                .publish((Symbol::short("purchased"), listing_id), total_price);
+
+            total_tonnes += amount;
+            total_usdc += total_price;
+            total_fees += fee;
+        }
+
+        env.events().publish(
+            (Symbol::short("BULK_PURCH"), num_items),
+            (buyer, total_tonnes, total_usdc, total_fees),
+        );
+
         Ok(())
     }
 
