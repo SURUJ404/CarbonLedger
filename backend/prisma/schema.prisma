@@ -1,0 +1,116 @@
+// Prisma schema for CarbonLedger-Lite.
+// Simplified from the original: no BulkPurchase / DexTrade models, since
+// bulk purchasing and DEX trading were dropped from this build.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectStatus {
+  PENDING
+  VERIFIED
+  SUSPENDED
+  REJECTED
+}
+
+enum UserRole {
+  DEVELOPER
+  CORPORATION
+  VERIFIER
+  ADMIN
+}
+
+model User {
+  id            String   @id @default(uuid())
+  stellarPubKey String   @unique
+  email         String?  @unique
+  role          UserRole @default(DEVELOPER)
+  createdAt     DateTime @default(now())
+
+  projects   Project[]
+  purchases  Retirement[]
+  listings   Listing[]
+}
+
+model Project {
+  id                  String        @id @default(uuid())
+  onChainId           BigInt        @unique
+  developer           User          @relation(fields: [developerId], references: [id])
+  developerId         String
+  name                String
+  methodology         String
+  latMicro            BigInt
+  lngMicro            BigInt
+  methodologyScore    Int?
+  status              ProjectStatus @default(PENDING)
+  docsIpfsCid         String?
+  lastMonitoringAt    DateTime?
+  createdAt           DateTime      @default(now())
+
+  batches CreditBatch[]
+}
+
+model CreditBatch {
+  id            String   @id @default(uuid())
+  onChainId     BigInt   @unique
+  project       Project  @relation(fields: [projectId], references: [id])
+  projectId     String
+  vintageYear   Int
+  serialStart   BigInt
+  serialEnd     BigInt
+  ownerPubKey   String
+  retired       Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  listings    Listing[]
+  retirement  Retirement?
+}
+
+model Listing {
+  id             String      @id @default(uuid())
+  onChainId      BigInt      @unique
+  batch          CreditBatch @relation(fields: [batchId], references: [id])
+  batchId        String
+  seller         User        @relation(fields: [sellerId], references: [id])
+  sellerId       String
+  pricePerTonne  BigInt // USDC stroops
+  tonnes         BigInt
+  active         Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+}
+
+model Retirement {
+  id             String      @id @default(uuid())
+  batch          CreditBatch @relation(fields: [batchId], references: [id])
+  batchId        String      @unique
+  retiredBy      User        @relation(fields: [retiredById], references: [id])
+  retiredById    String
+  beneficiary    String
+  reason         String
+  certificateUrl String      @unique
+  tonnes         BigInt
+  retiredAt      DateTime    @default(now())
+}
+
+model MonitoringRecord {
+  id           String   @id @default(uuid())
+  projectOnChainId BigInt
+  dataHash     String
+  flagged      Boolean  @default(false)
+  submittedAt  DateTime @default(now())
+}
+
+model BenchmarkPrice {
+  id             String   @id @default(uuid())
+  methodology    String
+  vintageYear    Int
+  pricePerTonne  BigInt
+  updatedAt      DateTime @updatedAt
+
+  @@unique([methodology, vintageYear])
+}
