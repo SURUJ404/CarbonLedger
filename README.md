@@ -11,18 +11,7 @@ This is a from-scratch rebuild that follows the same architecture, contract
 design, and lifecycle logic as the original CarbonLedger project, with a
 couple of deliberate scope cuts (see below) to keep the codebase small.
 
-## What's different from the original
 
-- **Marketplace is single-listing only.** `bulk_purchase()` (buying from
-  multiple projects in one transaction) and secondary trading via the
-  Stellar DEX (SDEX) were dropped. `list_credits()`, `delist_credits()`,
-  and `purchase_credits()` behave the same as the original.
-- **No observability stack.** Loki/Promtail/Grafana logging infra was
-  removed from `docker-compose.yml`; app-level logs still go to stdout.
-- Everything else — project registration/verification, credit minting with
-  globally unique serial numbers, irreversible on-chain retirement,
-  certificate generation, oracle monitoring freshness (365-day window),
-  and the 1% protocol fee — matches the original's logic.
 
 ## Architecture
 
